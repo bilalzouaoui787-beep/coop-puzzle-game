@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لعبة الألغاز التعاونية - Cyber Sync</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { font-family: Tahoma, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .card { background: #1e293b; padding: 25px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0.5,0.5,0.3); width: 100%; max-width: 600px; text-align: center; margin-bottom: 20px; }
+        input, button { padding: 10px 15px; margin: 8px; border-radius: 8px; border: none; font-size: 16px; }
+        input { background: #334155; color: white; width: 60%; }
+        button { background: #6366f1; color: white; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #4f46e5; }
+        .hidden { display: none !important; }
+        .grid-container { display: grid; grid-template-columns: repeat(3, 70px); gap: 10px; justify-content: center; margin: 20px 0; }
+        .grid-btn { width: 70px; height: 70px; font-size: 24px; border-radius: 8px; border: none; cursor: pointer; background: #475569; color: white; }
+        .grid-btn.active { background: #10b981; }
+        #chat-box { height: 120px; background: #0f172a; border-radius: 8px; overflow-y: scroll; padding: 10px; text-align: right; margin-bottom: 10px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <h1>لعبة الألغاز التعاونية عبر السيرفر</h1>
+
+    <!-- شاشة القائمة الرئيسية -->
+    <div id="lobby-screen" class="card">
+        <h2>اختر اسمك وانضم للعبة</h2>
+        <input type="text" id="username" placeholder="اسم اللاعب..." value="مهدي">
+        <br>
+        <button onclick="createRoom()">إنشاء غرفة جديدة</button>
+        <br>
+        <div style="margin-top: 15px;">
+            <input type="text" id="room-code-input" placeholder="أدخل رمز الغرفة (مثال: AB12)">
+            <button onclick="joinRoom()">انضمام لغرفة</button>
+        </div>
+        <p id="status-msg" style="color: #38bdf8;"></p>
+    </div>
+
+    <!-- شاشة اللعب التعاوني -->
+    <div id="game-screen" class="card hidden">
+        <h2 id="room-title">الغرفة: <span id="display-room">----</span></h2>
+        <p id="player-role" style="color: #f43f5e; font-weight: bold;"></p>
+        <p>حل اللغز بالتعاون مع صديقك عبر السيرفر لتتوافق المصفوفات!</p>
+        
+        <div style="display: flex; justify-content: space-around;">
+            <div>
+                <h3>لوحتك الخاصة</h3>
+                <div id="my-grid" class="grid-container"></div>
+            </div>
+            <div>
+                <h3>لوحة صديقك</h3>
+                <div id="peer-grid" class="grid-container" style="opacity: 0.7; pointer-events: none;"></div>
+            </div>
+        </div>
+
+        <h3 id="win-message" style="color: #10b981;" class="hidden">🎉 مبروك! لقد تعاونتم بنجاح وحللتم اللغز!</h3>
+
+        <!-- نظام الدردشة المباشرة بين اللاعبين -->
+        <div style="margin-top: 20px; text-align: right;">
+            <h3>الدردشة المشتركة</h3>
+            <div id="chat-box"></div>
+            <input type="text" id="chat-input" placeholder="اكتب رسالة لصديقك..." style="width: 75%;">
+            <button onclick="sendChatMessage()">إرسال</button>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentRoom = '';
+        let myPlayerId = null;
+        let myUsername = 'مهدي';
+
+        socket.on('room_created', (data) => {
+            currentRoom = data.room;
+            myPlayerId = data.player_id;
+            document.getElementById('display-room').innerText = currentRoom;
+            document.getElementById('player-role').innerText = `أنت اللاعب رقم ${myPlayerId} (المضيف)`;
+            switchToGame();
+        });
+
+        socket.on('room_joined', (data) => {
+            currentRoom = data.room;
+            myPlayerId = data.player_id;
+            document.getElementById('display-room').innerText = currentRoom;
+            document.getElementById('player-role').innerText = `أنت اللاعب رقم ${myPlayerId}`;
+            switchToGame();
+        });
+
+        socket.on('error_message', (data) => {
+            document.getElementById('status-msg').innerText = data.message;
+        });
+
+        function createRoom() {
+            myUsername = document.getElementById('username').value || 'مهدي';
+            socket.emit('create_room', { username: myUsername });
+        }
+
+        function joinRoom() {
+            myUsername = document.getElementById('username').value || 'مهدي';
+            const code = document.getElementById('room-code-input').value.trim();
+            if (!code) {
+                alert('الرجاء إدخال رمز الغرفة');
+                return;
+            }
+            socket.emit('join_room', { room: code, username: myUsername });
+        }
+
+        function switchToGame() {
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('game-screen').classList.remove('hidden');
+        }
+
+        // تحديث شبكة الأزرار
+        socket.on('update_game_state', (state) => {
+            renderGrids(state);
+            if (state.solved) {
+                document.getElementById('win-message').classList.remove('hidden');
+            }
+        });
+
+        function renderGrids(state) {
+            const myGridElem = document.getElementById('my-grid');
+            const peerGridElem = document.getElementById('peer-grid');
+            
+            myGridElem.innerHTML = '';
+            peerGridElem.innerHTML = '';
+
+            const myData = myPlayerId === 1 ? state.grid_p1 : state.grid_p2;
+            const peerData = myPlayerId === 1 ? state.grid_p2 : state.grid_p1;
+
+            myData.forEach((val, idx) => {
+                const btn = document.createElement('button');
+                btn.className = `grid-btn ${val === 1 ? 'active' : ''}`;
+                btn.innerText = val;
+                btn.onclick = () => {
+                    socket.emit('player_action', { room: currentRoom, type: 'toggle_grid', index: idx, player_id: myPlayerId });
+                };
+                myGridElem.appendChild(btn);
+            });
+
+            peerData.forEach((val) => {
+                const btn = document.createElement('div');
+                btn.className = `grid-btn ${val === 1 ? 'active' : ''}`;
+                btn.innerText = val;
+                peerGridElem.appendChild(btn);
+            });
+        }
+
+        function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            if (input.value.trim() !== '') {
+                socket.emit('send_chat', { room: currentRoom, username: myUsername, message: input.value });
+                input.value = '';
+            }
+        }
+
+        socket.on('receive_chat', (data) => {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML += `<div><b>${data.username}:</b> ${data.message}</div>`;
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+    </script>
+</body>
+</html>
